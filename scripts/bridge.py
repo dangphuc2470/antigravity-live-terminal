@@ -9,8 +9,54 @@ import fcntl
 import termios
 import errno
 import datetime
+import json
 
-SOCKET_PATH = os.environ.get("ANTIGRAVITY_LIVE_SOCKET", "/tmp/antigravity-live-terminal.sock")
+def find_socket():
+    if "ANTIGRAVITY_LIVE_SOCKET" in os.environ and os.path.exists(os.environ["ANTIGRAVITY_LIVE_SOCKET"]):
+        return os.environ["ANTIGRAVITY_LIVE_SOCKET"]
+
+    sock_dir = "/tmp/antigravity-live"
+    cwd = os.getcwd()
+    best_socket = None
+    best_len = 0
+    fallback_socket = None
+    fallback_mtime = 0
+
+    if os.path.isdir(sock_dir):
+        try:
+            for fname in os.listdir(sock_dir):
+                if fname.endswith(".json"):
+                    fpath = os.path.join(sock_dir, fname)
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        sock_path = data.get("socket")
+                        if not sock_path or not os.path.exists(sock_path):
+                            continue
+
+                        mtime = os.path.getmtime(fpath)
+                        if mtime > fallback_mtime:
+                            fallback_mtime = mtime
+                            fallback_socket = sock_path
+
+                        roots = data.get("roots", [])
+                        for root in roots:
+                            if cwd == root or cwd.startswith(root + os.sep):
+                                if len(root) > best_len:
+                                    best_len = len(root)
+                                    best_socket = sock_path
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+    if best_socket:
+        return best_socket
+    if fallback_socket:
+        return fallback_socket
+
+    legacy = "/tmp/antigravity-live-terminal.sock"
+    return legacy if os.path.exists(legacy) else None
 
 def set_winsize(fd, rows=35, cols=140):
     try:
@@ -30,14 +76,14 @@ def main():
 
     cmd = sys.argv[1]
 
-    # Check if live terminal socket exists
-    if not os.path.exists(SOCKET_PATH):
+    target_socket = find_socket()
+    if not target_socket:
         run_direct(cmd)
         return
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        sock.connect(SOCKET_PATH)
+        sock.connect(target_socket)
     except Exception:
         # Cannot connect to extension, fallback
         sock.close()
