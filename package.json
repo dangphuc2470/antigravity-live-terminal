@@ -2,7 +2,7 @@
   "name": "antigravity-live-terminal",
   "displayName": "Antigravity Live Terminal",
   "description": "Real-time interactive terminal mirroring for Antigravity AI Agent commands",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "dangphuc2470",
   "repository": {
     "type": "git",
@@ -28,6 +28,11 @@
       {
         "command": "antigravity-live-terminal.clearTerminal",
         "title": "Clear Agent Live Terminal",
+        "category": "Antigravity Live"
+      },
+      {
+        "command": "antigravity-live-terminal.setupShellHook",
+        "title": "Setup Shell Hook (~/.zshenv)",
         "category": "Antigravity Live"
       }
     ],
