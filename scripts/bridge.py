@@ -46,7 +46,7 @@ def main():
 
     cwd = os.getcwd()
     now_str = datetime.datetime.now().strftime("%H:%M:%S")
-    header = f"\r\n\x1b[1;36m>>> [Agent Run | {now_str}]:\x1b[0m \x1b[1;32m{cmd}\x1b[0m \x1b[90m(in {cwd})\x1b[0m\r\n"
+    header = f"\r\n\x1b[1;36m[Agent Run | {now_str}]:\x1b[0m \x1b[1;32m{cmd}\x1b[0m\r\n\x1b[90m(in {cwd})\x1b[0m\r\n"
     try:
         sock.sendall(header.encode("utf-8"))
     except Exception:
@@ -184,7 +184,7 @@ def main():
             pass
 
         color = "\x1b[1;32m" if exit_code == 0 else "\x1b[1;31m"
-        footer = f"\r\n{color}<<< [Exit Code: {exit_code}]\x1b[0m\r\n\r\n"
+        footer = f"\r\n{color}[Exit Code: {exit_code}]\x1b[0m\r\n\r\n"
         try:
             sock.sendall(footer.encode("utf-8"))
             sock.close()
