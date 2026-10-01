@@ -195,10 +195,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Create Unix Domain Socket server for this workspace
   server = net.createServer((socket) => {
     const config = vscode.workspace.getConfiguration('antigravity-live-terminal');
-    const autoShow = config.get<boolean>('autoShow', true);
+    const autoShow = config.get<boolean>('autoShow', false);
     const autoFocus = config.get<boolean>('autoFocus', false);
 
-    // Make sure terminal exists and show it
+    // Make sure terminal exists quietly without stealing panel view
     ensureTerminal(autoShow, !autoFocus);
 
     if (livePty) {
