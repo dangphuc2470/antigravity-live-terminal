@@ -79,7 +79,7 @@ def main():
 
     try:
         while inputs:
-            readable, _, _ = select.select(inputs, [], [])
+            readable, _, _ = select.select(inputs, [], [], 0.05)
             for fd in readable:
                 if fd == master_fd:
                     # Output from child command
