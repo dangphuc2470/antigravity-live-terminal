@@ -52,30 +52,17 @@ def main():
     except Exception:
         pass
 
-    # Allocate a pseudo-terminal for the command
-    master_fd, slave_fd = pty.openpty()
-    set_winsize(master_fd)
-
-    pid = os.fork()
+    # Allocate a pseudo-terminal for the command using pty.fork()
+    pid, master_fd = pty.fork()
     if pid == 0:
-        # Child process
-        os.close(master_fd)
-        os.setsid()
-
-        # Set slave as stdin, stdout, stderr
-        os.dup2(slave_fd, 0)
-        os.dup2(slave_fd, 1)
-        os.dup2(slave_fd, 2)
-        if slave_fd > 2:
-            os.close(slave_fd)
-
+        # Child process has acquired controlling terminal automatically
         os.environ["__AGY_INTERCEPTED"] = "1"
         os.environ["TERM"] = "xterm-256color"
         os.execvp("/bin/zsh", ["zsh", "-c", cmd])
         sys.exit(1)
 
     # Parent process
-    os.close(slave_fd)
+    set_winsize(master_fd)
 
     # Keep track of open descriptors to monitor
     inputs = [master_fd, sock.fileno()]
