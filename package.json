@@ -1,0 +1,73 @@
+{
+  "name": "antigravity-live-terminal",
+  "displayName": "Antigravity Live Terminal",
+  "description": "Real-time interactive terminal mirroring for Antigravity AI Agent commands",
+  "version": "0.0.1",
+  "publisher": "dangphuc2470",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dangphuc2470/antigravity-live-terminal"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "antigravity-live-terminal.showTerminal",
+        "title": "Show Agent Live Terminal",
+        "category": "Antigravity Live"
+      },
+      {
+        "command": "antigravity-live-terminal.clearTerminal",
+        "title": "Clear Agent Live Terminal",
+        "category": "Antigravity Live"
+      }
+    ],
+    "configuration": {
+      "title": "Antigravity Live Terminal",
+      "properties": {
+        "antigravity-live-terminal.autoShow": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically show the live terminal when an agent command starts."
+        },
+        "antigravity-live-terminal.autoFocus": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically focus the live terminal when an agent command starts (warning: will shift focus away from editor)."
+        },
+        "antigravity-live-terminal.socketPath": {
+          "type": "string",
+          "default": "/tmp/antigravity-live-terminal.sock",
+          "description": "Unix Domain Socket path used for bridging agent commands."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
