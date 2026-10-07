@@ -2,7 +2,7 @@
   "name": "antigravity-live-terminal",
   "displayName": "Antigravity Live Terminal",
   "description": "Real-time interactive terminal mirroring for Antigravity AI Agent commands",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "dangphuc2470",
   "repository": {
     "type": "git",
@@ -32,7 +32,7 @@
       },
       {
         "command": "antigravity-live-terminal.setupShellHook",
-        "title": "Setup Shell Hook (~/.zshenv)",
+        "title": "Setup Shell Hook (PowerShell profile / ~/.zshenv)",
         "category": "Antigravity Live"
       }
     ],
@@ -52,7 +52,7 @@
         "antigravity-live-terminal.socketPath": {
           "type": "string",
           "default": "/tmp/antigravity-live-terminal.sock",
-          "description": "Unix Domain Socket path used for bridging agent commands."
+          "description": "Unix Domain Socket path used on macOS/Linux. On Windows, secure local loopback IPC is automatically configured."
         }
       }
     }

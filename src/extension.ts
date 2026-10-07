@@ -6,11 +6,14 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import { LiveTerminalPty } from './terminalPty';
 
+const IS_WINDOWS = process.platform === 'win32';
+
 let server: net.Server | undefined;
 let livePty: LiveTerminalPty | undefined;
 let liveTerminal: vscode.Terminal | undefined;
 let activeSocketPath: string | undefined;
 let activeJsonPath: string | undefined;
+let activeAuthToken: string | undefined;
 
 function getWorkspaceRoots(): string[] {
   const folders = vscode.workspace.workspaceFolders;
@@ -20,13 +23,27 @@ function getWorkspaceRoots(): string[] {
   return folders.map((f) => f.uri.fsPath);
 }
 
-function getSocketAndJsonPaths(): { socketPath: string; jsonPath: string } {
-  const sockDir = '/tmp/antigravity-live';
+/**
+ * Returns the IPC metadata / socket directory.
+ * Unix/macOS: /tmp/antigravity-live
+ * Windows: %TEMP%\antigravity-live
+ */
+function getSockDir(): string {
+  if (IS_WINDOWS) {
+    return path.join(os.tmpdir(), 'antigravity-live');
+  }
+  return '/tmp/antigravity-live';
+}
+
+function getSocketAndJsonPaths(): { socketPath: string; jsonPath: string; hash: string } {
+  const sockDir = getSockDir();
   if (!fs.existsSync(sockDir)) {
     fs.mkdirSync(sockDir, { recursive: true });
-    try {
-      fs.chmodSync(sockDir, 0o700);
-    } catch (_) {}
+    if (!IS_WINDOWS) {
+      try {
+        fs.chmodSync(sockDir, 0o700);
+      } catch (_) {}
+    }
   }
 
   const roots = getWorkspaceRoots();
@@ -35,7 +52,7 @@ function getSocketAndJsonPaths(): { socketPath: string; jsonPath: string } {
 
   const socketPath = path.join(sockDir, `sock-${hash}.sock`);
   const jsonPath = path.join(sockDir, `ws-${hash}.json`);
-  return { socketPath, jsonPath };
+  return { socketPath, jsonPath, hash };
 }
 
 function ensureTerminal(show: boolean = false, preserveFocus: boolean = true): vscode.Terminal {
@@ -70,7 +87,9 @@ function syncBridgeScript(context: vscode.ExtensionContext): string {
   try {
     if (fs.existsSync(sourceFile)) {
       fs.copyFileSync(sourceFile, targetFile);
-      fs.chmodSync(targetFile, 0o755);
+      if (!IS_WINDOWS) {
+        fs.chmodSync(targetFile, 0o755);
+      }
     }
   } catch (err) {
     console.error('Failed to sync bridge script:', err);
@@ -79,9 +98,11 @@ function syncBridgeScript(context: vscode.ExtensionContext): string {
   return targetFile;
 }
 
-function installShellHook(): boolean {
-  const zshenvPath = path.join(os.homedir(), '.zshenv');
-  const hookSnippet = `
+// ─────────────────────────────────────────────────────────────────────────────
+// Unix / macOS zsh hook
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ZSH_HOOK_SNIPPET = `
 # Antigravity Live Terminal Interceptor Hook
 if [[ -n "$ANTIGRAVITY_TRAJECTORY_ID" && -z "$__AGY_INTERCEPTED" && -n "$ZSH_EXECUTION_STRING" ]]; then
     export __AGY_INTERCEPTED=1
@@ -90,6 +111,20 @@ if [[ -n "$ANTIGRAVITY_TRAJECTORY_ID" && -z "$__AGY_INTERCEPTED" && -n "$ZSH_EXE
     fi
 fi
 `;
+
+function hasZshHook(): boolean {
+  const zshenvPath = path.join(os.homedir(), '.zshenv');
+  try {
+    if (fs.existsSync(zshenvPath)) {
+      const content = fs.readFileSync(zshenvPath, 'utf-8');
+      return content.includes('antigravity-live') || content.includes('bridge.py');
+    }
+  } catch {}
+  return false;
+}
+
+function installZshHook(): boolean {
+  const zshenvPath = path.join(os.homedir(), '.zshenv');
 
   try {
     let content = '';
@@ -105,76 +140,171 @@ fi
     if (content.includes('antigravity-live-terminal.sock') || content.includes('bridge.py')) {
       content = content.replace(
         /# Antigravity Live Terminal[\s\S]*?fi\s*fi/,
-        hookSnippet.trim()
+        ZSH_HOOK_SNIPPET.trim()
       );
       fs.writeFileSync(zshenvPath, content, 'utf-8');
       return true;
     }
 
-    fs.appendFileSync(zshenvPath, hookSnippet, 'utf-8');
+    fs.appendFileSync(zshenvPath, ZSH_HOOK_SNIPPET, 'utf-8');
     return true;
   } catch (err) {
-    console.error('Failed to install shell hook:', err);
+    console.error('Failed to install zsh hook:', err);
     return false;
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Windows PowerShell profile hook
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PS_HOOK_MARKER = 'Antigravity Live Terminal Interceptor Hook';
+
+const PS_HOOK_SNIPPET = `
+# Antigravity Live Terminal Interceptor Hook
+if ($env:ANTIGRAVITY_TRAJECTORY_ID -and -not $env:__AGY_INTERCEPTED) {
+    $cmdLineArgs = [System.Environment]::GetCommandLineArgs()
+    $cmdIdx = -1
+    $isEncoded = $false
+    for ($i = 0; $i -lt $cmdLineArgs.Length; $i++) {
+        $a = $cmdLineArgs[$i]
+        if ($a -ieq '-Command' -or $a -ieq '-c') { $cmdIdx = $i; break }
+    }
+    if ($cmdIdx -eq -1) {
+        for ($i = 0; $i -lt $cmdLineArgs.Length; $i++) {
+            $a = $cmdLineArgs[$i]
+            if ($a -ieq '-EncodedCommand' -or $a -ieq '-enc' -or $a -ieq '-en') {
+                $cmdIdx = $i; $isEncoded = $true; break
+            }
+        }
+    }
+    if ($cmdIdx -ge 0 -and ($cmdIdx + 1) -lt $cmdLineArgs.Length) {
+        $theCmd = $cmdLineArgs[$cmdIdx + 1]
+        if ($isEncoded) {
+            $theCmd = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String($theCmd))
+        }
+        $bridgePath = Join-Path $env:USERPROFILE '.antigravity-live\\bridge.py'
+        if (Test-Path $bridgePath) {
+            $env:__AGY_INTERCEPTED = '1'
+            $pyExe = 'python'
+            foreach ($exe in @('py', 'python', 'python3')) {
+                if (Get-Command $exe -ErrorAction SilentlyContinue) { $pyExe = $exe; break }
+            }
+            $b64 = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($theCmd))
+            & $pyExe $bridgePath --base64 $b64
+            exit $LASTEXITCODE
+        }
+    }
+}
+`;
+
+function getPowerShellProfilePaths(): string[] {
+  return [
+    path.join(os.homedir(), 'Documents', 'PowerShell', 'profile.ps1'),
+    path.join(os.homedir(), 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
+    path.join(os.homedir(), 'Documents', 'WindowsPowerShell', 'profile.ps1'),
+    path.join(os.homedir(), 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1'),
+  ];
+}
+
+function hasPowerShellHook(): boolean {
+  for (const profilePath of getPowerShellProfilePaths()) {
+    try {
+      if (fs.existsSync(profilePath)) {
+        const content = fs.readFileSync(profilePath, 'utf-8');
+        if (content.includes(PS_HOOK_MARKER)) {
+          return true;
+        }
+      }
+    } catch {}
+  }
+  return false;
+}
+
+function installPowerShellHook(): boolean {
+  let anyUpdated = false;
+  for (const profilePath of getPowerShellProfilePaths()) {
+    try {
+      const profileDir = path.dirname(profilePath);
+      if (!fs.existsSync(profileDir)) {
+        fs.mkdirSync(profileDir, { recursive: true });
+      }
+
+      let content = '';
+      if (fs.existsSync(profilePath)) {
+        content = fs.readFileSync(profilePath, 'utf-8');
+      }
+
+      if (content.includes(PS_HOOK_MARKER)) {
+        if (!content.includes('--base64') || !content.includes('$b64')) {
+          content = content.replace(
+            /# Antigravity Live Terminal Interceptor Hook[\s\S]*?\n\}/,
+            PS_HOOK_SNIPPET.trim()
+          );
+          fs.writeFileSync(profilePath, content, 'utf-8');
+          anyUpdated = true;
+        }
+        continue;
+      }
+
+      fs.appendFileSync(profilePath, PS_HOOK_SNIPPET, 'utf-8');
+      anyUpdated = true;
+    } catch (err) {
+      console.error(`Failed to install PowerShell hook to ${profilePath}:`, err);
+    }
+  }
+  return anyUpdated;
+}
+
+function hasShellHook(): boolean {
+  return IS_WINDOWS ? hasPowerShellHook() : hasZshHook();
+}
+
+function installShellHook(): boolean {
+  return IS_WINDOWS ? installPowerShellHook() : installZshHook();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extension Lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function activate(context: vscode.ExtensionContext) {
-  // Always ensure global bridge script is in ~/.antigravity-live/bridge.py
+  // Always ensure global bridge script is synced to ~/.antigravity-live/bridge.py
   syncBridgeScript(context);
 
-  // Compute workspace-isolated socket & metadata paths
   const { socketPath, jsonPath } = getSocketAndJsonPaths();
   activeSocketPath = socketPath;
   activeJsonPath = jsonPath;
+  activeAuthToken = crypto.randomBytes(16).toString('hex');
 
-  // Clean up stale socket file if it exists
-  try {
-    if (fs.existsSync(socketPath)) {
-      fs.unlinkSync(socketPath);
+  // Clean up stale Unix domain socket file if on Unix
+  if (!IS_WINDOWS) {
+    try {
+      if (fs.existsSync(socketPath)) {
+        fs.unlinkSync(socketPath);
+      }
+    } catch (err) {
+      console.error('Failed to unlink existing socket:', err);
     }
-  } catch (err) {
-    console.error('Failed to unlink existing socket:', err);
   }
 
-  // Write workspace metadata JSON so bridge.py can match cwd to this workspace
-  try {
-    const metadata = {
-      roots: getWorkspaceRoots(),
-      socket: socketPath,
-      pid: process.pid,
-      updatedAt: Date.now(),
-    };
-    fs.writeFileSync(jsonPath, JSON.stringify(metadata, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to write workspace metadata:', err);
+  // Also maintain legacy symlink /tmp/antigravity-live-terminal.sock (Unix only)
+  if (!IS_WINDOWS) {
+    try {
+      const legacyPath = '/tmp/antigravity-live-terminal.sock';
+      if (fs.existsSync(legacyPath)) {
+        fs.unlinkSync(legacyPath);
+      }
+      fs.symlinkSync(socketPath, legacyPath);
+    } catch (_) {}
   }
 
-  // Also maintain legacy symlink /tmp/antigravity-live-terminal.sock
-  try {
-    const legacyPath = '/tmp/antigravity-live-terminal.sock';
-    if (fs.existsSync(legacyPath)) {
-      fs.unlinkSync(legacyPath);
-    }
-    fs.symlinkSync(socketPath, legacyPath);
-  } catch (_) {}
-
-  // Check if shell hook needs to be installed or offered
-  const zshenvPath = path.join(os.homedir(), '.zshenv');
-  let hasHook = false;
-  try {
-    if (fs.existsSync(zshenvPath)) {
-      const content = fs.readFileSync(zshenvPath, 'utf-8');
-      hasHook = content.includes('antigravity-live') || content.includes('bridge.py');
-    }
-  } catch {
-    hasHook = false;
-  }
-
-  if (!hasHook) {
+  // Check if shell hook needs to be installed
+  if (!hasShellHook()) {
+    const hookTarget = IS_WINDOWS ? 'PowerShell profile' : '~/.zshenv';
     vscode.window
       .showInformationMessage(
-        'Antigravity Live Terminal: Tự động cấu hình shell hook vào ~/.zshenv để xem live logs?',
+        `Antigravity Live Terminal: Tự động cấu hình shell hook vào ${hookTarget} để xem live logs?`,
         'Cài đặt ngay',
         'Để sau'
       )
@@ -186,30 +316,51 @@ export function activate(context: vscode.ExtensionContext) {
         }
       });
   } else {
-    // Silently ensure the path in .zshenv is up to date
     installShellHook();
   }
 
   livePty = new LiveTerminalPty();
 
-  // Create Unix Domain Socket server for this workspace
+  // Create socket / TCP server
   server = net.createServer((socket) => {
+    let authenticated = !IS_WINDOWS; // Unix sockets are permission-protected (0700)
+
     const config = vscode.workspace.getConfiguration('antigravity-live-terminal');
     const autoShow = config.get<boolean>('autoShow', false);
     const autoFocus = config.get<boolean>('autoFocus', false);
 
-    // Make sure terminal exists quietly without stealing panel view
     ensureTerminal(autoShow, !autoFocus);
 
-    if (livePty) {
-      livePty.registerSocket(socket);
-    }
-
     socket.on('data', (data) => {
+      if (IS_WINDOWS && !authenticated) {
+        const text = data.toString('utf-8');
+        const lines = text.split('\n');
+        if (lines[0].trim() === activeAuthToken) {
+          authenticated = true;
+          if (livePty) {
+            livePty.registerSocket(socket);
+          }
+          const remaining = lines.slice(1).join('\n');
+          if (remaining.length > 0 && livePty) {
+            livePty.writeMessage(remaining);
+          }
+          return;
+        } else {
+          socket.destroy();
+          return;
+        }
+      }
+
       if (livePty) {
         livePty.writeMessage(data.toString());
       }
     });
+
+    if (!IS_WINDOWS) {
+      if (livePty) {
+        livePty.registerSocket(socket);
+      }
+    }
 
     socket.on('close', () => {
       if (livePty) {
@@ -225,11 +376,44 @@ export function activate(context: vscode.ExtensionContext) {
     });
   });
 
-  server.listen(socketPath, () => {
+  if (IS_WINDOWS) {
+    // On Windows, use local TCP on 127.0.0.1 with ephemeral port
+    server.listen(0, '127.0.0.1', () => {
+      const address = server?.address() as net.AddressInfo | null;
+      const port = address ? address.port : 0;
+      try {
+        const metadata = {
+          roots: getWorkspaceRoots(),
+          port: port,
+          token: activeAuthToken,
+          pid: process.pid,
+          updatedAt: Date.now(),
+        };
+        fs.writeFileSync(jsonPath, JSON.stringify(metadata, null, 2), 'utf-8');
+      } catch (err) {
+        console.error('Failed to write workspace metadata:', err);
+      }
+    });
+  } else {
+    // On macOS / Linux, use Unix domain socket
     try {
-      fs.chmodSync(socketPath, 0o700);
-    } catch (_) {}
-  });
+      const metadata = {
+        roots: getWorkspaceRoots(),
+        socket: socketPath,
+        pid: process.pid,
+        updatedAt: Date.now(),
+      };
+      fs.writeFileSync(jsonPath, JSON.stringify(metadata, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('Failed to write workspace metadata:', err);
+    }
+
+    server.listen(socketPath, () => {
+      try {
+        fs.chmodSync(socketPath, 0o700);
+      } catch (_) {}
+    });
+  }
 
   server.on('error', (err) => {
     console.error('Agent Live Terminal Server error:', err);
@@ -258,8 +442,9 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('antigravity-live-terminal.setupShellHook', () => {
       syncBridgeScript(context);
       const updated = installShellHook();
+      const hookTarget = IS_WINDOWS ? 'PowerShell profile' : '~/.zshenv';
       if (updated) {
-        vscode.window.showInformationMessage('Đã cài đặt shell hook vào ~/.zshenv thành công!');
+        vscode.window.showInformationMessage(`Đã cài đặt shell hook vào ${hookTarget} thành công!`);
       } else {
         vscode.window.showInformationMessage('Shell hook đã được cài đặt từ trước.');
       }
@@ -275,7 +460,7 @@ export function deactivate() {
     server.close();
     server = undefined;
   }
-  if (activeSocketPath && fs.existsSync(activeSocketPath)) {
+  if (!IS_WINDOWS && activeSocketPath && fs.existsSync(activeSocketPath)) {
     try {
       fs.unlinkSync(activeSocketPath);
     } catch (_) {}
